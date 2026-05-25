@@ -1,19 +1,34 @@
 import streamlit as st
 import math
 import time
+import json
 
-# --- SEITEN-SETUP & GEDÄCHTNIS (SESSION STATE) ---
+# --- SEITEN-SETUP ---
 st.set_page_config(page_title="Feld-Assistent GW", page_icon="🛠️", layout="centered")
 
-# Gedächtnis-Variablen initialisieren
+# =========================================================================
+# CRASH-SCHUTZ: DATEN AUTOMATISCH AUS DER URL WIEDERHERSTELLEN
+# =========================================================================
 if 'ziel_volumen' not in st.session_state:
-    st.session_state.ziel_volumen = 0.0
+    val = st.query_params.get('ziel_volumen', '0.0')
+    st.session_state.ziel_volumen = float(val) if val else 0.0
+
 if 'pumpen_leistung' not in st.session_state:
-    st.session_state.pumpen_leistung = 0.0
-if 'messungen' not in st.session_state:
-    st.session_state.messungen = []
+    val = st.query_params.get('pumpen_leistung', '0.0')
+    st.session_state.pumpen_leistung = float(val) if val else 0.0
+
 if 'pumpen_start' not in st.session_state:
-    st.session_state.pumpen_start = None
+    val = st.query_params.get('pumpen_start', '')
+    st.session_state.pumpen_start = float(val) if (val and val != 'None') else None
+
+if 'messungen' not in st.session_state:
+    val = st.query_params.get('messungen', '[]')
+    try:
+        st.session_state.messungen = json.loads(val) if val else []
+    except:
+        st.session_state.messungen = []
+
+# =========================================================================
 
 st.title("🛠️ Grundwasser Feld-Assistent")
 st.write("Wählen Sie das benötigte Werkzeug über die Reiter aus:")
@@ -40,7 +55,10 @@ with tab1:
         else:
             standwasser_volumen = math.pi * (radius_m ** 2) * wassersaeule_m * 1000
             abpump_volumen = 3 * standwasser_volumen
+            
+            # In Speicher UND URL sichern
             st.session_state.ziel_volumen = abpump_volumen
+            st.query_params['ziel_volumen'] = str(abpump_volumen)
             
             st.success("✅ Berechnung erfolgreich! Wert wurde für den Timer gespeichert.")
             col1, col2, col3 = st.columns(3)
@@ -65,7 +83,10 @@ with tab2:
             radius_m = durchmesser_m / 2
             zylinder_volumen_m3 = math.pi * (radius_m ** 2) * maechtigkeit_m
             ziel_volumen_l = (zylinder_volumen_m3 * 1.5) * 1000
+            
+            # In Speicher UND URL sichern
             st.session_state.ziel_volumen = ziel_volumen_l
+            st.query_params['ziel_volumen'] = str(ziel_volumen_l)
             
             st.success("✅ Berechnung erfolgreich! Wert wurde für den Timer gespeichert.")
             col1, col2 = st.columns(2)
@@ -107,11 +128,12 @@ with tab3:
     st.write("---")
     if st.button("Förderstrom für den Timer übernehmen", type="primary", key="btn_strom"):
         st.session_state.pumpen_leistung = l_min
+        st.query_params['pumpen_leistung'] = str(l_min)
         st.success(f"✅ Förderstrom von {l_min:.2f} l/min gespeichert.")
 
 
 # ==========================================
-# WERKZEUG 4: LIVE-TIMER & PROTOKOLL (AKTUALISIERT)
+# WERKZEUG 4: LIVE-TIMER & PROTOKOLL
 # ==========================================
 with tab4:
     st.subheader("⏳ Protokoll & Abpump-Überwachung")
@@ -128,8 +150,12 @@ with tab4:
         # STATUS: PUMPE NOCH NICHT GESTARTET
         if st.session_state.pumpen_start is None:
             if st.button("▶️ Pumpe starten & Protokoll beginnen", type="primary"):
-                st.session_state.pumpen_start = time.time()
+                jetzt = time.time()
+                st.session_state.pumpen_start = jetzt
                 st.session_state.messungen = [] 
+                
+                st.query_params['pumpen_start'] = str(jetzt)
+                st.query_params['messungen'] = "[]"
                 st.rerun() 
         
         # STATUS: PUMPE LÄUFT
@@ -186,17 +212,19 @@ with tab4:
                     "O2 (mg/l)": o2
                 }
                 st.session_state.messungen.append(neue_messung)
+                # Live in die URL spiegeln gegen Datenverlust bei Absturz
+                st.query_params['messungen'] = json.dumps(st.session_state.messungen)
+                
                 st.success(f"Messung bei Minute {zeitstempel} erfolgreich gespeichert!")
+                st.rerun()
                 
             # --- PROTOKOLL & EXPORT ---
             if len(st.session_state.messungen) > 0:
                 st.write("---")
                 st.markdown("### 📋 Ihr digitales Messprotokoll")
                 
-                # Berechnung der prozentualen Abweichung für die Live-Tabelle
                 tabellen_daten = list(st.session_state.messungen)
                 
-                # Wenn mindestens zwei Messungen vorhanden sind, berechnen wir die Abweichung der letzten Zeile
                 if len(st.session_state.messungen) >= 2:
                     m_letzte = st.session_state.messungen[-1]
                     m_vorletzte = st.session_state.messungen[-2]
@@ -205,7 +233,6 @@ with tab4:
                         if alt == 0: return 0.0
                         return ((neu - alt) / alt) * 100
                     
-                    # Eine künstliche Zeile für die Abweichung erstellen
                     abweichung_zeile = {
                         "Zeit (Min)": "Δ zum Vorwert",
                         "Wasserstand (m)": f"{prozent_diff(m_letzte['Wasserstand (m)'], m_vorletzte['Wasserstand (m)']):+.1f}%",
@@ -215,13 +242,11 @@ with tab4:
                         "Redox (mV)": f"{prozent_diff(m_letzte['Redox (mV)'], m_vorletzte['Redox (mV)']):+.1f}%",
                         "O2 (mg/l)": f"{prozent_diff(m_letzte['O2 (mg/l)'], m_vorletzte['O2 (mg/l)']):+.1f}%"
                     }
-                    # Für die Anzeige hängen wir die Zeile temporär an
                     tabellen_daten = tabellen_daten + [abweichung_zeile]
                 
-                # Zeigt die Daten zur Kontrolle als Tabelle an
                 st.dataframe(tabellen_daten)
                 
-                # --- EXPORT FÜR DIE ZWISCHENABLAGE BAUEN ---
+                # EXPORT-STRING BAUEN
                 protokoll_text = "Protokoll Vor-Ort-Parameter (Grundwasser)\n"
                 protokoll_text += "="*60 + "\n"
                 protokoll_text += f"Ziel-Volumen:\t{vol:.1f} L\n"
@@ -232,7 +257,6 @@ with tab4:
                 for m in st.session_state.messungen:
                     protokoll_text += f"{m['Zeit (Min)']}\t{m['Wasserstand (m)']:.2f}\t{m['Temp (°C)']:.1f}\t{m['pH']:.2f}\t{m['LF (µS/cm)']:.0f}\t{m['Redox (mV)']:.0f}\t{m['O2 (mg/l)']:.1f}\n"
                 
-                # Wenn vorhanden, die Abweichungszeile auch lesbar ins Textprotokoll packen
                 if len(st.session_state.messungen) >= 2:
                     protokoll_text += "-"*60 + "\n"
                     protokoll_text += f"Letzte Änderung (%):\t{abweichung_zeile['Wasserstand (m)']}\t{abweichung_zeile['Temp (°C)']}\t{abweichung_zeile['pH']}\t{abweichung_zeile['LF (µS/cm)']}\t{abweichung_zeile['Redox (mV)']}\t{abweichung_zeile['O2 (mg/l)']}\n"
@@ -240,6 +264,16 @@ with tab4:
                 st.write("---")
                 st.info("💡 **Kopieren:** Nutzen Sie das kleine Symbol oben rechts im grauen Kasten, um das strukturierte Protokoll direkt in Ihre Zwischenablage zu kopieren.")
                 st.code(protokoll_text, language="markdown")
+            
+            # --- DER NEUE RESET-BUTTON ---
+            st.write("---")
+            if st.button("🗑️ Alles zurücksetzen (Neues Bohrloch)", type="secondary"):
+                st.session_state.ziel_volumen = 0.0
+                st.session_state.pumpen_leistung = 0.0
+                st.session_state.pumpen_start = None
+                st.session_state.messungen = []
+                st.query_params.clear()
+                st.rerun()
                 
             if remaining_total == 0:
                 st.balloons()
@@ -247,3 +281,4 @@ with tab4:
                 
     else:
         st.warning("⚠️ Bitte berechnen Sie zuerst das Abpumpvolumen (Reiter 1 oder 2) und übernehmen Sie den Förderstrom (Reiter 3).")
+
